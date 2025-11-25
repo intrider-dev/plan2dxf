@@ -6,7 +6,6 @@ import os
 import ezdxf
 from ezdxf import units
 
-# 1 план-единица Remplanner = 10 мм (по площади комнат в JSON)
 SCALE_TO_MM = 10.0
 
 
@@ -39,14 +38,26 @@ def ensure_layer(doc, name, color=None):
         doc.layers.add(name, color=color)
 
 
-def add_wall_entities(doc, msp, plan, extents):
-    """
-    Стены: берём контур по l1,l2,r2,r1 → LWPOLYLINE (замкнутая).
-    Проёмы (doors/windows/прочее) рисуем отдельными полилиниями.
-    """
+def element_belongs_to_plan(obj, plan_code):
+    if plan_code is None:
+        return True
+    if not isinstance(obj, dict):
+        return True
+    p = obj.get("plan")
+    if isinstance(p, str):
+        return p == plan_code
+    if isinstance(p, dict):
+        v = p.get(plan_code)
+        return bool(v)
+    return True
+
+
+def add_wall_entities(doc, msp, plan, extents, plan_code=None):
     walls = plan.get("walls", {})
     for wall_id, wall in walls.items():
         if wall.get("role") != "wall":
+            continue
+        if not element_belongs_to_plan(wall, plan_code):
             continue
 
         l1 = wall.get("l1")
@@ -72,9 +83,10 @@ def add_wall_entities(doc, msp, plan, extents):
         ensure_layer(doc, layer, color=7)
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": layer})
 
-        # Проёмы в стенах
         holes = wall.get("holes", {})
         for hole_id, hole in holes.items():
+            if not element_belongs_to_plan(hole, plan_code):
+                continue
             pts_hole = []
             if "polygon" in hole:
                 for pt in hole["polygon"]:
@@ -109,10 +121,7 @@ def add_wall_entities(doc, msp, plan, extents):
     return extents
 
 
-def add_room_entities(doc, msp, plan, extents):
-    """
-    Комнаты (rooms2): контур комнаты полилинией + подпись площади в центре.
-    """
+def add_room_entities(doc, msp, plan, extents, plan_code=None):
     rooms = plan.get("rooms2", {})
     if not isinstance(rooms, dict):
         return extents
@@ -121,6 +130,9 @@ def add_room_entities(doc, msp, plan, extents):
     ensure_layer(doc, "Rooms_Text", color=7)
 
     for room_id, room in rooms.items():
+        if not element_belongs_to_plan(room, plan_code):
+            continue
+
         polygon = room.get("polygon") or room.get("points") or []
         if not polygon:
             continue
@@ -134,10 +146,8 @@ def add_room_entities(doc, msp, plan, extents):
             sy += y_mm
             extents = update_extents(extents, x_mm, y_mm)
 
-        # Контур комнаты
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "Rooms"})
 
-        # Центр подписи
         cx = sx / len(pts)
         cy = sy / len(pts)
         extents = update_extents(extents, cx, cy)
@@ -167,11 +177,7 @@ def add_room_entities(doc, msp, plan, extents):
     return extents
 
 
-def add_items_entities(doc, msp, plan, extents):
-    """
-    Items: мебель, сантехника и т.п. – прямоугольник по ширине/высоте вокруг центра
-    с поворотом по angle.
-    """
+def add_items_entities(doc, msp, plan, extents, plan_code=None):
     items = plan.get("items", {})
     if not isinstance(items, dict):
         return extents
@@ -179,6 +185,9 @@ def add_items_entities(doc, msp, plan, extents):
     ensure_layer(doc, "Furniture", color=2)
 
     for item_id, item in items.items():
+        if not element_belongs_to_plan(item, plan_code):
+            continue
+
         w = item.get("width")
         h = item.get("height")
         if w is None or h is None:
@@ -198,7 +207,6 @@ def add_items_entities(doc, msp, plan, extents):
         w2 = float(w) * SCALE_TO_MM / 2.0
         h2 = float(h) * SCALE_TO_MM / 2.0
 
-        # Прямоугольник вокруг центра (до поворота)
         corners = [(-w2, h2), (w2, h2), (w2, -h2), (-w2, -h2)]
 
         theta = math.radians(angle)
@@ -218,10 +226,7 @@ def add_items_entities(doc, msp, plan, extents):
     return extents
 
 
-def add_pipes_entities(doc, msp, plan, extents):
-    """
-    Вентканалы: pipes_ventilation.vertexes[].point → полилинии.
-    """
+def add_pipes_entities(doc, msp, plan, extents, plan_code=None):
     pipes = plan.get("pipes_ventilation", {})
     if not isinstance(pipes, dict):
         return extents
@@ -229,6 +234,8 @@ def add_pipes_entities(doc, msp, plan, extents):
     ensure_layer(doc, "Ventilation", color=4)
 
     for pid, pipe in pipes.items():
+        if not element_belongs_to_plan(pipe, plan_code):
+            continue
         verts = pipe.get("vertexes") or pipe.get("vertices") or []
         if not verts:
             continue
@@ -246,10 +253,7 @@ def add_pipes_entities(doc, msp, plan, extents):
     return extents
 
 
-def add_rulers_entities(doc, msp, plan, extents):
-    """
-    Линейки-замеры: rulers.p1/p2 → LINE.
-    """
+def add_rulers_entities(doc, msp, plan, extents, plan_code=None):
     rulers = plan.get("rulers", {})
     if not isinstance(rulers, dict):
         return extents
@@ -257,6 +261,8 @@ def add_rulers_entities(doc, msp, plan, extents):
     ensure_layer(doc, "Rulers", color=5)
 
     for rid, ruler in rulers.items():
+        if not element_belongs_to_plan(ruler, plan_code):
+            continue
         p1 = ruler.get("p1")
         p2 = ruler.get("p2")
         if not p1 or not p2:
@@ -269,50 +275,9 @@ def add_rulers_entities(doc, msp, plan, extents):
     return extents
 
 
-def add_comments_entities(doc, msp, plan, extents):
-    """
-    Комментарии: TEXT в точке pc/p, плюс выноска (LINE), если p != pc.
-    """
-    comments = plan.get("comments", {})
-    if not isinstance(comments, dict):
-        return extents
-
-    ensure_layer(doc, "Comments", color=1)
-
-    for cid, comment in comments.items():
-        text = comment.get("text")
-        if not text:
-            continue
-        pc = comment.get("pc") or comment.get("p")
-        if not pc:
-            continue
-        tx, ty = to_mm_point(pc)
-        height = 100.0
-        txt = msp.add_text(
-            text,
-            dxfattribs={"height": height, "layer": "Comments"},
-        )
-        txt.dxf.insert = (tx, ty, 0.0)
-        extents = update_extents(extents, tx, ty)
-
-        p = comment.get("p")
-        if p:
-            px, py = to_mm_point(p)
-            if abs(px - tx) > 1e-6 or abs(py - ty) > 1e-6:
-                msp.add_line(
-                    (px, py),
-                    (tx, ty),
-                    dxfattribs={"layer": "Comments"},
-                )
-                extents = update_extents(extents, px, py)
-    return extents
-
-
-def build_dxf_from_plan(plan, output_path):
-    # Создаём DXF R2010, включаем базовые таблицы и стили
+def build_dxf_from_plan(plan, output_path, plan_code=None):
     doc = ezdxf.new(dxfversion="R2010", setup=True)
 
-    # Единицы — миллиметры
     doc.units = units.MM
     doc.header["$INSUNITS"] = units.MM
     doc.header["$MEASUREMENT"] = 1
@@ -321,14 +286,12 @@ def build_dxf_from_plan(plan, output_path):
 
     extents = None
 
-    extents = add_wall_entities(doc, msp, plan, extents)
-    extents = add_room_entities(doc, msp, plan, extents)
-    extents = add_items_entities(doc, msp, plan, extents)
-    extents = add_pipes_entities(doc, msp, plan, extents)
-    extents = add_rulers_entities(doc, msp, plan, extents)
-    extents = add_comments_entities(doc, msp, plan, extents)
+    extents = add_wall_entities(doc, msp, plan, extents, plan_code)
+    extents = add_room_entities(doc, msp, plan, extents, plan_code)
+    extents = add_items_entities(doc, msp, plan, extents, plan_code)
+    extents = add_pipes_entities(doc, msp, plan, extents, plan_code)
+    extents = add_rulers_entities(doc, msp, plan, extents, plan_code)
 
-    # Границы чертежа для CAD
     if extents is not None:
         min_x, min_y, max_x, max_y = extents
         doc.header["$EXTMIN"] = (min_x, min_y, 0.0)
@@ -337,9 +300,46 @@ def build_dxf_from_plan(plan, output_path):
     doc.saveas(output_path)
 
 
+def collect_plan_codes(plan):
+    codes = set()
+
+    walls = plan.get("walls", {})
+    for w in walls.values():
+        val = w.get("plan")
+        if isinstance(val, str):
+            codes.add(val)
+
+    rooms = plan.get("rooms2", {})
+    for r in rooms.values():
+        val = r.get("plan")
+        if isinstance(val, str):
+            codes.add(val)
+
+    items = plan.get("items", {})
+    for it in items.values():
+        val = it.get("plan")
+        if isinstance(val, str):
+            codes.add(val)
+        elif isinstance(val, dict):
+            for k in val.keys():
+                if isinstance(k, str) and len(k) == 1:
+                    codes.add(k)
+
+    rulers = plan.get("rulers", {})
+    for r in rulers.values():
+        val = r.get("plan")
+        if isinstance(val, str) and len(val) == 1:
+            codes.add(val)
+
+    clean_codes = {c for c in codes if isinstance(c, str) and len(c) == 1}
+    return sorted(clean_codes)
+
+
 def main():
     input_path = input("Введите путь к .plan.json файлу: ").strip()
-    output_path = input("Введите путь для сохранения .dxf файла (например Plan.dxf): ").strip()
+    output_path = input(
+        "Введите базовый путь для сохранения .dxf (например /tmp/Plan.dxf или /tmp/Plan): "
+    ).strip()
 
     if not input_path:
         print("Не указан путь к входному файлу.")
@@ -365,13 +365,32 @@ def main():
         print("В JSON нет раздела 'plan' или он имеет неверный формат.")
         sys.exit(1)
 
+    codes = collect_plan_codes(plan)
+
+    base, ext = os.path.splitext(output_path)
+    if ext.lower() == ".dxf":
+        base_out = base
+    else:
+        base_out = output_path
+
     try:
-        build_dxf_from_plan(plan, output_path)
+        if not codes:
+            out_path = base_out + ".dxf"
+            build_dxf_from_plan(plan, out_path, plan_code=None)
+            print(f"DXF успешно сохранён в: {out_path}")
+        elif len(codes) == 1:
+            code = codes[0]
+            out_path = base_out + ".dxf"
+            build_dxf_from_plan(plan, out_path, plan_code=code)
+            print(f"DXF успешно сохранён в: {out_path} (план '{code}')")
+        else:
+            for idx, code in enumerate(codes, start=1):
+                out_path = f"{base_out}_{idx}.dxf"
+                build_dxf_from_plan(plan, out_path, plan_code=code)
+                print(f"DXF успешно сохранён в: {out_path} (план '{code}')")
     except Exception as e:
         print(f"Ошибка при построении DXF: {e}")
         sys.exit(1)
-
-    print(f"DXF успешно сохранён в: {output_path}")
 
 
 if __name__ == "__main__":
